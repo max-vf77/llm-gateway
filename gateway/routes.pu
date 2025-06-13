@@ -1,8 +1,11 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Request, Depends
 from .auth import verify_api_key
+from .client import forward_to_llm
 
 router = APIRouter()
 
-@router.get("/ping")
-def ping(_: str = Depends(verify_api_key)):
-    return {"message": "pong"}
+@router.post("/v1/completions")
+async def completions(request: Request, _: str = Depends(verify_api_key)):
+    payload = await request.json()
+    result = await forward_to_llm(payload)
+    return result
