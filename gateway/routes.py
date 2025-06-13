@@ -2,8 +2,11 @@ from fastapi import APIRouter, Request, Depends, HTTPException, status
 from typing import Dict, Any
 from .auth import verify_api_key
 from .client import forward_to_llm
+from .limiter import rate_limited, get_rate_limit_info
 from billing.limits import check_limits, LimitExceededException
 from billing.tracker import log_usage
+from billing.token_tracker import token_tracker
+from billing.tariffs import get_tariff, get_max_tokens
 import logging
 
 # Создание роутера
@@ -57,7 +60,7 @@ def extract_actual_token_count(result: Dict[Any, Any]) -> int:
 @router.post("/v1/completions")
 async def completions(
     request: Request, 
-    api_key: str = Depends(verify_api_key)
+    api_key: str = Depends(rate_limited)
 ) -> Dict[Any, Any]:
     """
     Обработка запросов на генерацию текста
@@ -72,7 +75,16 @@ async def completions(
         estimated_tokens = estimate_token_count(payload)
         logger.debug(f"Estimated tokens for request: {estimated_tokens}")
         
-        # Проверка лимитов перед выполнением запроса
+        # Проверка тарифных лимитов через TokenTracker
+        max_tokens = get_max_tokens(api_key)
+        if not token_tracker.check_limit(api_key, max_tokens):
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Превышен месячный лимит токенов по тарифу. Лимит: {max_tokens}",
+                headers={"Retry-After": "86400"}  # Повторить через день
+            )
+        
+        # Проверка дневных/месячных лимитов через billing систему
         try:
             limits_info = check_limits(api_key, estimated_tokens)
             logger.info(f"Limits check passed for API key {api_key[:8]}...")
@@ -87,11 +99,17 @@ async def completions(
         actual_tokens = extract_actual_token_count(result)
         logger.debug(f"Actual tokens used: {actual_tokens}")
         
-        # Логирование использования токенов
+        # Логирование использования токенов в billing системе
         if log_usage(api_key, actual_tokens):
-            logger.info(f"Usage logged: {actual_tokens} tokens for API key {api_key[:8]}...")
+            logger.info(f"Usage logged in billing: {actual_tokens} tokens for API key {api_key[:8]}...")
         else:
-            logger.warning(f"Failed to log usage for API key {api_key[:8]}...")
+            logger.warning(f"Failed to log usage in billing for API key {api_key[:8]}...")
+        
+        # Логирование использования токенов в TokenTracker
+        if token_tracker.increment_usage(api_key, actual_tokens):
+            logger.info(f"Usage logged in tracker: {actual_tokens} tokens for API key {api_key[:8]}...")
+        else:
+            logger.warning(f"Failed to log usage in tracker for API key {api_key[:8]}...")
         
         logger.info("Запрос успешно обработан")
         return result
@@ -117,18 +135,33 @@ async def health_check():
 @router.get("/usage")
 async def get_usage(api_key: str = Depends(verify_api_key)):
     """
-    Получение статистики использования для API-ключа
+    Получение комплексной статистики использования для API-ключа
     """
     from billing.tracker import get_usage_stats
     from billing.limits import get_remaining_limits
     
     try:
-        usage_stats = get_usage_stats(api_key)
-        remaining_limits = get_remaining_limits(api_key)
+        # Статистика из billing системы
+        billing_stats = get_usage_stats(api_key)
+        billing_limits = get_remaining_limits(api_key)
+        
+        # Статистика из TokenTracker
+        tracker_usage = token_tracker.get_detailed_usage(api_key)
+        
+        # Информация о тарифе
+        tariff_info = get_tariff(api_key)
+        
+        # Информация о rate limiting
+        rate_limit_info = get_rate_limit_info(api_key)
         
         return {
-            "usage": usage_stats,
-            "limits": remaining_limits
+            "billing": {
+                "usage": billing_stats,
+                "limits": billing_limits
+            },
+            "tracker": tracker_usage,
+            "tariff": tariff_info,
+            "rate_limit": rate_limit_info
         }
     except Exception as e:
         logger.error(f"Error getting usage for API key {api_key[:8]}...: {str(e)}")
@@ -156,6 +189,52 @@ async def get_limits(api_key: str = Depends(verify_api_key)):
         )
 
 
+@router.get("/tariff")
+async def get_tariff_info(api_key: str = Depends(verify_api_key)):
+    """
+    Получение информации о тарифе для API-ключа
+    """
+    try:
+        tariff_info = get_tariff(api_key)
+        tracker_usage = token_tracker.get_detailed_usage(api_key)
+        
+        # Вычисление процента использования
+        used_tokens = tracker_usage.get("used_tokens", 0)
+        max_tokens = tariff_info.get("max_tokens", 1)
+        usage_percentage = round((used_tokens / max_tokens) * 100, 2) if max_tokens > 0 else 0
+        
+        return {
+            "tariff": tariff_info,
+            "usage": {
+                "used_tokens": used_tokens,
+                "remaining_tokens": max(0, max_tokens - used_tokens),
+                "usage_percentage": usage_percentage
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error getting tariff info for API key {api_key[:8]}...: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Ошибка при получении информации о тарифе"
+        )
+
+
+@router.get("/rate-limit")
+async def get_rate_limit_status(api_key: str = Depends(verify_api_key)):
+    """
+    Получение информации о текущем состоянии rate limit
+    """
+    try:
+        rate_limit_info = get_rate_limit_info(api_key)
+        return rate_limit_info
+    except Exception as e:
+        logger.error(f"Error getting rate limit info for API key {api_key[:8]}...: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Ошибка при получении информации о rate limit"
+        )
+
+
 @router.get("/")
 async def root():
     """
@@ -163,12 +242,22 @@ async def root():
     """
     return {
         "service": "LLM Gateway",
-        "version": "1.0.0",
-        "description": "Шлюз для проксирования запросов к серверу инференса LLM",
+        "version": "2.0.0",
+        "description": "Шлюз для проксирования запросов к серверу инференса LLM с системой биллинга и rate limiting",
+        "features": [
+            "API key authentication",
+            "Rate limiting (30 req/min)",
+            "Token usage tracking",
+            "Tariff-based limits",
+            "Daily/monthly billing limits",
+            "Redis-based storage with fallback"
+        ],
         "endpoints": {
             "completions": "/v1/completions",
             "usage": "/usage",
             "limits": "/limits",
+            "tariff": "/tariff",
+            "rate_limit": "/rate-limit",
             "health": "/health"
         }
     }
