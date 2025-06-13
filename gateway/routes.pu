@@ -1,0 +1,8 @@
+from fastapi import APIRouter, Depends
+from .auth import verify_api_key
+
+router = APIRouter()
+
+@router.get("/ping")
+def ping(_: str = Depends(verify_api_key)):
+    return {"message": "pong"}
