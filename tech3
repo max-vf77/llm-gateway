@@ -1,0 +1,74 @@
+ Создай модуль limiter.py для проекта llm-gateway. Модуль должен:
+
+Подключаться к Redis с параметрами из .env.
+
+Реализовывать ограничение скорости: 30 запросов за 60 секунд на один API-ключ.
+
+Использовать ключи Redis вида rate_limit:{api_key} и TTL.
+
+При превышении лимита — возвращать HTTP 429.
+
+Предоставить зависимость rate_limited (FastAPI Depends) для использования в маршрутах.
+
+
+
+
+
+---
+
+🔧 Примерная логика реализации:
+
+# gateway/limiter.py
+
+import os
+from fastapi import Request, HTTPException
+from redis import Redis
+from dotenv import load_dotenv
+
+load_dotenv()
+
+redis = Redis(
+    host=os.getenv("REDIS_HOST", "localhost"),
+    port=int(os.getenv("REDIS_PORT", 6379)),
+    db=int(os.getenv("REDIS_DB", 0)),
+    decode_responses=True
+)
+
+RATE_LIMIT = 30
+WINDOW = 60  # seconds
+
+def check_rate_limit(api_key: str):
+    key = f"rate_limit:{api_key}"
+    current = redis.incr(key)
+
+    if current == 1:
+        redis.expire(key, WINDOW)
+
+    if current > RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Превышен лимит запросов")
+
+async def rate_limited(request: Request):
+    api_key = request.headers.get("X-API-Key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API ключ не предоставлен")
+
+    check_rate_limit(api_key)
+
+так же Создай файл `billing/token_tracker.py` для FastAPI-based LLM gateway. Он должен содержать класс `TokenTracker`, который:
+
+1. Поддерживает Redis и fallback на словарь.
+2. Хранит статистику токенов по API-ключу (`str`): `{"used_tokens": int, "last_updated": datetime}`.
+3. Имеет методы:
+   - `get_usage(api_key: str) -> int`
+   - `increment_usage(api_key: str, tokens: int)`
+   - `check_limit(api_key: str, max_tokens: int) -> bool`
+   - `reset_monthly_usage()` — ручной сброс (cron поддержка)
+
+Добавь логгирование превышения лимита. Подключение Redis через `redis-py`, fallback — обычный dict в памяти.
+
+Также создай файл `billing/tariffs.py`, в котором будет словарь `TARIFFS = {api_key: {"max_tokens": int}}`.
+
+Это позволит реализовать тарификацию по ключу.
+
+ещё добавь TokenTraker в routes.py
+позволь возвращать клиенту usage-данные и создай endpoint /usage
