@@ -1,0 +1,72 @@
+проверь создано ли два файла для FastAPI-проекта LLM Gateway:
+
+---
+
+📄 billing/token_tracker.py
+
+Реализуй класс `TokenTracker`, который:
+
+1. Поддерживает Redis (если установлен и доступен) и fallback на словарь.
+2. Хранит usage по API-ключу: `{"used_tokens": int, "last_updated": datetime}`
+3. Имеет методы:
+   - `get_usage(api_key: str) -> int`
+   - `increment_usage(api_key: str, tokens: int)`
+   - `check_limit(api_key: str, max_tokens: int) -> bool`
+   - `reset_monthly_usage()` — сбрасывает usage (вызывать через cron)
+4. Использует `redis-py` (`redis.Redis`) с конфигурацией по умолчанию (`localhost:6379`)
+5. Логирует превышение лимита через `logging.warning`
+
+---
+
+📄 billing/tariffs.py
+
+Создай словарь `TARIFFS`, содержащий параметры для каждого API-ключа:
+
+```python
+TARIFFS = {
+    "demo-key-1": {"max_tokens": 100_000},
+    "premium-key-2": {"max_tokens": 1_000_000},
+    "free-user": {"max_tokens": 10_000}
+}
+
+Допиши файл `gateway/routes.py` в проекте LLM Gateway:
+
+1. Импортируй:
+```python
+from billing.token_tracker import TokenTracker
+from billing.tariffs import TARIFFS
+from fastapi import HTTPException
+
+
+
+2. Инициализируй token_tracker = TokenTracker()
+
+
+3. В основном роуте генерации (например, /generate, /chat, /completion):
+
+Получи API-ключ из запроса
+
+Получи max_tokens из TARIFFS
+
+Проверь, не превышен ли лимит через token_tracker.check_limit(...)
+
+Если превышен — верни HTTPException(status_code=429, detail="Token limit exceeded.")
+
+После генерации получи used_tokens из результата (response["usage"]["total_tokens"])
+
+Обнови usage: token_tracker.increment_usage(api_key, used_tokens)
+
+
+
+4. Добавь новый endpoint:
+
+
+
+@app.get("/usage")
+def usage_info(api_key: str):
+    max_tokens = TARIFFS.get(api_key, {}).get("max_tokens", 0)
+    used_tokens = token_tracker.get_usage(api_key)
+    return {"api_key": api_key, "used_tokens": used_tokens, "max_tokens": max_tokens}
+
+5. Добавь логирование: если лимит почти исчерпан (например, >90%) — логируй предупреждение через logging.warning(...)
+
