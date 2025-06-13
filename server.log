@@ -36,3 +36,8 @@ Failed to connect to Redis: Error 99 connecting to localhost:6379. Cannot assign
 Daily limit exceeded for API key sk-test-...
 Limits exceeded for API key sk-test-...: Превышен дневной лимит токенов. Использовано: 0, лимит: 5
 INFO:     127.0.0.1:39176 - "POST /v1/completions HTTP/1.1" 429 Too Many Requests
+INFO:     10.2.58.81:33734 - "GET / HTTP/1.1" 200 OK
+INFO:     10.2.15.133:33840 - "GET / HTTP/1.1" 200 OK
+INFO:     10.2.58.81:55530 - "GET / HTTP/1.1" 200 OK
+INFO:     10.2.58.81:43928 - "GET / HTTP/1.1" 200 OK
+INFO:     10.2.58.81:55356 - "GET / HTTP/1.1" 200 OK
