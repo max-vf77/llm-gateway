@@ -1,0 +1,42 @@
+
+✅ Промпт для генерации CLI-утилиты управления API-ключами и тарифами
+
+Создай файл `tools/cli.py` в проекте LLM Gateway с CLI-интерфейсом для управления API-ключами и тарифами.
+
+Функциональность:
+
+1. Используй библиотеку `argparse`
+2. Поддержи команды:
+   - `create-key` — создать API-ключ и задать тариф
+   - `revoke-key` — удалить ключ
+   - `list-keys` — показать все ключи и тарифы
+   - `set-limit` — обновить лимит токенов для ключа
+
+3. Структура хранения — файл `billing/keys.json`, структура:
+```json
+{
+  "key1": {"max_tokens": 100000},
+  "key2": {"max_tokens": 50000}
+}
+
+4. Реализуй в billing/utils.py функции:
+
+load_keys() -> dict
+
+save_keys(data: dict)
+
+generate_api_key() -> str
+
+validate_key_format(key: str) -> bool
+
+
+
+5. Пример использования CLI:
+
+
+
+python tools/cli.py create-key --limit 100000
+python tools/cli.py list-keys
+python tools/cli.py revoke-key --key ABC123
+
+6. После успешного выполнения команд — выводи краткое сообщение в консоль
